@@ -3,9 +3,11 @@ import random
 import os
 from discord import app_commands
 from discord.ext import commands
+
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
 @bot.event
 async def on_ready():
     print(f'Bot is ready as {bot.user}')
@@ -16,6 +18,7 @@ async def on_ready():
             print(f"Registered command: {command.name}")
     except Exception as e:
         print(f"Failed to sync commands: {e}")
+
 @bot.tree.command(name="おすすめ漫画", description="おすすめの漫画をランダムで表示します")
 async def recommend_manga(interaction: discord.Interaction):
     fetch_channel_id = 1297538136225878109
@@ -37,6 +40,7 @@ async def recommend_manga(interaction: discord.Interaction):
     await interaction.response.send_message("おすすめを表示しました！", ephemeral=True)
     target_channel = bot.get_channel(1297537770574581841)
     await target_channel.send(response_message)
+
 @bot.command()
 @commands.is_owner()
 async def sync(ctx):
@@ -45,7 +49,10 @@ async def sync(ctx):
         await ctx.send(f"Synced {len(synced)} commands.")
     except Exception as e:
         await ctx.send(f"Failed to sync commands: {e}")
+
 try:
     bot.run(os.getenv('DISCORD_TOKEN'))
+except discord.errors.LoginFailure as e:
+    print(f"Login failed: {e}")
 except Exception as e:
-    print(f"Error occurred: {e}")
+    print(f"An error occurred: {e}")
