@@ -26,8 +26,7 @@ async def recommend_manga(interaction: discord.Interaction):
         # フォーラムのチャンネルIDとスレッドID
         forum_channel_id = 1288321432828248124  # フォーラムチャンネルID
         thread_id = 1288407362318893109  # スレッドID
-        fetch_channel_id = 1297538136225878109  # メッセージIDを取得するチャンネルID
-        target_channel_id = 1297537770574581841  # おすすめメッセージを送るチャンネルID
+        target_channel_id = 1297538136225878109  # メッセージ取得と送信を行うチャンネルID
 
         # ターゲットチャンネルの取得
         target_channel = bot.get_channel(target_channel_id)
@@ -35,21 +34,11 @@ async def recommend_manga(interaction: discord.Interaction):
             await interaction.response.send_message(f"ターゲットチャンネルが見つかりませんでした（ID: {target_channel_id}）。", ephemeral=True)
             return
 
-        # メッセージを取得するチャンネルの取得
-        fetch_channel = bot.get_channel(fetch_channel_id)
-        if fetch_channel is None:
-            await interaction.response.send_message(f"メッセージを取得するチャンネルが見つかりませんでした（ID: {fetch_channel_id}）。", ephemeral=True)
+        # フォーラムチャンネルからスレッドの取得
+        forum_channel = bot.get_channel(forum_channel_id)
+        if forum_channel is None:
+            await interaction.response.send_message(f"フォーラムチャンネルが見つかりませんでした（ID: {forum_channel_id}）。", ephemeral=True)
             return
-
-        # チャンネルからメッセージ履歴を取得
-        messages = [message async for message in fetch_channel.history(limit=100)]
-        if not messages:
-            await interaction.response.send_message("メッセージが見つかりませんでした。", ephemeral=True)
-            return
-
-        # ランダムにメッセージを選択
-        random_message = random.choice(messages)
-        random_message_url = f"https://discord.com/channels/{random_message.guild.id}/{random_message.channel.id}/{random_message.id}"
 
         # スレッドの取得
         thread = bot.get_channel(thread_id)
@@ -67,9 +56,12 @@ async def recommend_manga(interaction: discord.Interaction):
             return
 
         # ランダムに他のユーザーのメッセージを選択
-        random_thread_user = random.choice(eligible_messages).author
+        random_message = random.choice(eligible_messages)
+
         mention = f"<@{interaction.user.id}>"
-        response_message = (f"{mention} さんには、「{random_thread_user.name}」さんが投稿したこの本がおすすめだよ！\n"
+        random_message_url = f"https://discord.com/channels/{random_message.guild.id}/{random_message.channel.id}/{random_message.id}"
+
+        response_message = (f"{mention} さんには、「{random_message.author.name}」さんが投稿したこちらのメッセージがおすすめです！\n"
                             f"{random_message_url}")
 
         # ターゲットチャンネルにメッセージを送信
