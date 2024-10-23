@@ -54,8 +54,15 @@ async def recommend_manga(interaction: discord.Interaction):
         response_message = (f"{mention} さんには、「{random_thread_user.name}」さんが投稿したこの本がおすすめだよ！\n"
                             f"{random_message_url}")
 
+        # ターゲットチャンネルを取得
+        target_channel_id = 1297537770574581841
+        target_channel = bot.get_channel(target_channel_id)
+
+        if target_channel is None:
+            await interaction.followup.send(f"ターゲットチャンネルが見つかりませんでした（ID: {target_channel_id}）。", ephemeral=True)
+            return
+
         # ターゲットチャンネルに送信
-        target_channel = bot.get_channel(1297537770574581841)
         await target_channel.send(response_message)
 
         # 最終的な応答をフォローアップで返す
