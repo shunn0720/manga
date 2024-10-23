@@ -1,3 +1,24 @@
+import discord
+import random
+import os
+from discord.ext import commands
+
+# 必要なIntentsを有効化
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ボットが準備完了した際に呼び出されるイベント
+@bot.event
+async def on_ready():
+    print(f'Bot is ready as {bot.user}')
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} commands.")
+    except Exception as e:
+        print(f"Failed to sync commands: {e}")
+
+# おすすめ漫画コマンド
 @bot.tree.command(name="おすすめ漫画", description="おすすめの漫画をランダムで表示します")
 async def recommend_manga(interaction: discord.Interaction):
     # すぐに仮応答を返す（応答保留）
@@ -38,3 +59,11 @@ async def recommend_manga(interaction: discord.Interaction):
 
     # フォローアップメッセージとして応答を送信
     await interaction.followup.send("おすすめを表示しました！", ephemeral=True)
+
+# Herokuの環境変数からDiscordトークンを取得してボットを起動
+try:
+    bot.run(os.getenv('DISCORD_TOKEN'))
+except discord.errors.LoginFailure as e:
+    print(f"Login failed: {e}")
+except Exception as e:
+    print(f"An error occurred: {e}")
