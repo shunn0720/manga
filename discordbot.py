@@ -19,14 +19,14 @@ async def on_ready():
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
-# おすすめの漫画を表示するコマンド
-@bot.tree.command(name="おすすめ漫画", description="おすすめの漫画をランダムで表示します")
+# おすすめのメッセージを表示するコマンド
+@bot.tree.command(name="おすすめ漫画", description="フォーラムスレッドからランダムでメッセージを取得し表示します")
 async def recommend_manga(interaction: discord.Interaction):
     try:
         # フォーラムのチャンネルIDとスレッドID
         forum_channel_id = 1288321432828248124  # フォーラムチャンネルID
-        thread_id = 1288407362318893109  # スレッドID
-        target_channel_id = 1297538136225878109  # メッセージ取得と送信を行うチャンネルID
+        thread_id = 1288407362318893109  # メッセージを取得するスレッドID
+        target_channel_id = 1297538136225878109  # メッセージ送信先のターゲットチャンネルID
 
         # ターゲットチャンネルの取得
         target_channel = bot.get_channel(target_channel_id)
