@@ -24,41 +24,47 @@ async def recommend_manga(interaction: discord.Interaction):
     # 応答を保留し、仮応答を返す
     await interaction.response.defer(ephemeral=True)
 
-    # スレッドIDを指定してメッセージ履歴を取得
-    thread_id = 1288407362318893109
-    thread = bot.get_channel(thread_id)
+    try:
+        # スレッドIDを指定してメッセージ履歴を取得
+        thread_id = 1288407362318893109  # スレッドIDは指定済み
+        thread = bot.get_channel(thread_id)
 
-    if thread is None:
-        await interaction.followup.send("指定されたスレッドが見つかりませんでした。", ephemeral=True)
-        return
+        if thread is None:
+            await interaction.followup.send("指定されたスレッドが見つかりませんでした。", ephemeral=True)
+            return
 
-    # メッセージ履歴を非同期で取得
-    messages = []
-    async for message in thread.history(limit=100):
-        if message.author.id != interaction.user.id:  # 実行者以外のメッセージを取得
-            messages.append(message)
+        # メッセージ履歴を非同期で取得
+        messages = []
+        async for message in thread.history(limit=100):
+            if message.author.id != interaction.user.id:  # 実行者以外のメッセージを取得
+                messages.append(message)
 
-    if not messages:
-        await interaction.followup.send("他のユーザーのメッセージが見つかりませんでした。", ephemeral=True)
-        return
+        if not messages:
+            await interaction.followup.send("他のユーザーのメッセージが見つかりませんでした。", ephemeral=True)
+            return
 
-    random_message = random.choice(messages)
+        random_message = random.choice(messages)
 
-    # ランダムメッセージのリンクを生成
-    random_message_url = f"https://discord.com/channels/{random_message.guild.id}/{random_message.channel.id}/{random_message.id}"
-    random_thread_user = random_message.author
+        # ランダムメッセージのリンクを生成
+        random_message_url = f"https://discord.com/channels/{random_message.guild.id}/{random_message.channel.id}/{random_message.id}"
+        random_thread_user = random_message.author
 
-    # 応答メッセージを構成
-    mention = f"<@{interaction.user.id}>"
-    response_message = (f"{mention} さんには、「{random_thread_user.name}」さんが投稿したこの本がおすすめだよ！\n"
-                        f"{random_message_url}")
+        # 応答メッセージを構成
+        mention = f"<@{interaction.user.id}>"
+        response_message = (f"{mention} さんには、「{random_thread_user.name}」さんが投稿したこの本がおすすめだよ！\n"
+                            f"{random_message_url}")
 
-    # ターゲットチャンネルに送信
-    target_channel = bot.get_channel(1297537770574581841)
-    await target_channel.send(response_message)
+        # ターゲットチャンネルに送信
+        target_channel = bot.get_channel(1297537770574581841)
+        await target_channel.send(response_message)
 
-    # 最終的な応答をフォローアップで返す
-    await interaction.followup.send("おすすめを表示しました！", ephemeral=True)
+        # 最終的な応答をフォローアップで返す
+        await interaction.followup.send("おすすめを表示しました！", ephemeral=True)
+
+    except Exception as e:
+        # エラーハンドリング
+        await interaction.followup.send(f"エラーが発生しました: {e}", ephemeral=True)
+        print(f"Error: {e}")
 
 # Herokuの環境変数からDiscordトークンを取得してボットを起動
 try:
