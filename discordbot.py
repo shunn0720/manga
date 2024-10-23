@@ -7,7 +7,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ボットが起動した時のイベント
 @bot.event
 async def on_ready():
     print(f'Bot is ready as {bot.user}')
@@ -19,27 +18,27 @@ async def on_ready():
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
-# おすすめ漫画のスラッシュコマンド
 @bot.tree.command(name="おすすめ漫画", description="おすすめの漫画をランダムで表示します")
 async def recommend_manga(interaction: discord.Interaction):
     try:
-        # スレッドIDとターゲットチャンネルID
-        thread_id = 1288407362318893109  # スレッドIDを正しく設定
-        fetch_channel_id = 1297537770574581841  # メッセージを表示するチャンネルID
-        target_channel = bot.get_channel(fetch_channel_id)
+        # チャンネルとスレッドID
+        forum_channel_id = 1288321432828248124  # フォーラムチャンネルID
+        thread_id = 1288407362318893109  # スレッドID
+        target_channel_id = 1297537770574581841  # メッセージを表示するチャンネルID
 
-        # ターゲットチャンネルの存在確認
+        # ターゲットチャンネルの取得
+        target_channel = bot.get_channel(target_channel_id)
         if target_channel is None:
-            await interaction.response.send_message(f"ターゲットチャンネルが見つかりませんでした（ID: {fetch_channel_id}）。", ephemeral=True)
+            await interaction.response.send_message(f"ターゲットチャンネルが見つかりませんでした（ID: {target_channel_id}）。", ephemeral=True)
             return
 
-        # スレッドを取得
+        # フォーラムスレッドの取得
         thread = bot.get_channel(thread_id)
         if thread is None:
-            await interaction.response.send_message("スレッドが見つかりませんでした。", ephemeral=True)
+            await interaction.response.send_message(f"スレッドが見つかりませんでした（ID: {thread_id}）。", ephemeral=True)
             return
 
-        # スレッド内のメッセージを取得
+        # スレッド内のメッセージ履歴の取得
         thread_messages = [message async for message in thread.history(limit=100)]
         eligible_messages = [msg for msg in thread_messages if msg.author.id != interaction.user.id]
 
@@ -64,7 +63,6 @@ async def recommend_manga(interaction: discord.Interaction):
     except Exception as e:
         await interaction.response.send_message(f"エラーが発生しました: {e}", ephemeral=True)
 
-# コマンドの同期用コマンド
 @bot.command()
 @commands.is_owner()
 async def sync(ctx):
