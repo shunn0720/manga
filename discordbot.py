@@ -44,6 +44,9 @@ async def recommend_manga(interaction: discord.Interaction):
             await interaction.response.send_message(f"スレッドが見つかりませんでした（ID: {THREAD_ID}）", ephemeral=True)
             return
 
+        # インタラクションの反応をおくらせる
+        await interaction.response.defer()
+
         # スレッドからメッセージを取得
         messages = [message async for message in thread.history(limit=100)]
         if not messages:
@@ -55,12 +58,12 @@ async def recommend_manga(interaction: discord.Interaction):
 
         # ランダムメッセージを送信
         if random_message.content:
-            await interaction.response.send_message(f"おすすめの漫画: {random_message.content}")
+            await interaction.followup.send(f"おすすめの漫画: {random_message.content}")
         else:
-            await interaction.response.send_message("取得したメッセージが空でした。", ephemeral=True)
+            await interaction.followup.send("おすすめの漫画が見つかりませんでした。", ephemeral=True)
 
     except Exception as e:
-        await interaction.response.send_message(f"エラーが発生しました: {e}", ephemeral=True)
+        await interaction.followup.send(f"エラーが発生しました: {e}", ephemeral=True)
         print(f"Error occurred: {e}")
 
 # Botの起動
