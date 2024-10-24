@@ -50,15 +50,21 @@ async def recommend_manga(interaction: discord.Interaction):
         # スレッドからメッセージを取得
         messages = [message async for message in thread.history(limit=100)]
         if not messages:
-            await interaction.response.send_message("スレッド内にメッセージがありませんでした。", ephemeral=True)
+            await interaction.followup.send("スレッド内にメッセージがありませんでした。", ephemeral=True)
             return
 
         # ランダムでメッセージを選択
         random_message = random.choice(messages)
 
+        # メッセージリンクを作成
+        message_link = f"https://discord.com/channels/{random_message.guild.id}/{random_message.channel.id}/{random_message.id}"
+
         # ランダムメッセージを送信
         if random_message.content:
-            await interaction.followup.send(f"おすすめの漫画: {random_message.content}")
+            # コマンドを実行したユーザーをメンションし、投稿者の名前とリンクを含めたメッセージを送信
+            await interaction.followup.send(
+                f"@{interaction.user.display_name} さんには、{random_message.author.display_name} さんが投稿したこの本がおすすめだよ！\n{message_link}"
+            )
         else:
             await interaction.followup.send("おすすめの漫画が見つかりませんでした。", ephemeral=True)
 
