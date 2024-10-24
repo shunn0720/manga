@@ -63,7 +63,7 @@ async def recommend_manga(interaction: discord.Interaction):
         if random_message.content:
             # コマンドを実行したユーザーをメンションし、投稿者の名前とリンクを含めたメッセージを送信
             await interaction.followup.send(
-                f"@{interaction.user.display_name} さんには、{random_message.author.display_name} さんが投稿したこの本がおすすめだよ！\n{message_link}"
+                f"{interaction.user.mention} さんには、{random_message.author.display_name} さんが投稿したこの本がおすすめだよ！\n{message_link}"
             )
         else:
             await interaction.followup.send("おすすめの漫画が見つかりませんでした。", ephemeral=True)
