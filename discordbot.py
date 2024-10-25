@@ -19,6 +19,9 @@ TOKEN = os.getenv('DISCORD_TOKEN')  # Herokuに環境変数として設定して
 FORUM_CHANNEL_ID = 1288321432828248124  # フォーラムのチャンネルID
 THREAD_ID = 1288407362318893109  # 対象のスレッドID
 
+# 直前に選ばれた投稿者のIDを記憶する
+last_author_id = None
+
 @bot.event
 async def on_ready():
     print(f"Bot is ready as {bot.user}")
@@ -31,6 +34,7 @@ async def on_ready():
 # ランダムなおすすめのメッセージを送信するコマンド
 @bot.tree.command(name="おすすめ漫画", description="おすすめの漫画をランダムで表示します")
 async def recommend_manga(interaction: discord.Interaction):
+    global last_author_id
     try:
         # ターゲットのフォーラムチャンネルとスレッドの取得
         forum_channel = bot.get_channel(FORUM_CHANNEL_ID)
@@ -53,15 +57,23 @@ async def recommend_manga(interaction: discord.Interaction):
             await interaction.followup.send("スレッド内にメッセージがありませんでした。", ephemeral=True)
             return
 
-        # ランダムでメッセージを選択
-        random_message = random.choice(messages)
+        # 直前に選ばれた投稿者以外のユーザーのメッセージをフィルタリング
+        filtered_messages = [msg for msg in messages if msg.author.id != last_author_id]
+
+        # フィルタされたメッセージがない場合は全メッセージから選ぶ
+        if not filtered_messages:
+            random_message = random.choice(messages)
+        else:
+            random_message = random.choice(filtered_messages)
+
+        # 新しい投稿者IDを記録
+        last_author_id = random_message.author.id
 
         # メッセージリンクを作成
         message_link = f"https://discord.com/channels/{random_message.guild.id}/{random_message.channel.id}/{random_message.id}"
 
         # ランダムメッセージを送信
         if random_message.content:
-            # コマンドを実行したユーザーをメンションし、投稿者の名前とリンクを含めたメッセージを送信
             await interaction.followup.send(
                 f"{interaction.user.mention} さんには、{random_message.author.display_name} さんが投稿したこの本がおすすめだよ！\n{message_link}"
             )
