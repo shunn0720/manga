@@ -57,8 +57,11 @@ async def recommend_manga(interaction: discord.Interaction):
             await interaction.followup.send("スレッド内にメッセージがありませんでした。", ephemeral=True)
             return
 
-        # 直前に選ばれた投稿者以外のユーザーのメッセージをフィルタリング
-        filtered_messages = [msg for msg in messages if msg.author.id != last_author_id]
+        # コマンド実行者および直前に選ばれた投稿者以外のメッセージをフィルタリング
+        filtered_messages = [
+            msg for msg in messages
+            if msg.author.id != interaction.user.id and msg.author.id != last_author_id
+        ]
 
         # フィルタされたメッセージがない場合は全メッセージから選ぶ
         if not filtered_messages:
