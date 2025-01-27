@@ -1,1 +1,4 @@
-discord.py[voice]
+discord.py
+python-dotenv
+psycopg2-binary
+google-cloud-sql-connector
