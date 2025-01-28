@@ -1,104 +1,957 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+import discord
+from discord.ext import commands, tasks
+from discord import app_commands
+from datetime import datetime, timedelta
+import os
+import random
+import logging
+import asyncio
+import psycopg2
+from psycopg2 import pool, Error
+from psycopg2.extras import DictCursor
+from dotenv import load_dotenv
+import json
 
-# C extensions
-*.so
+########################
+# .env 環境変数読み込み（ローカル開発用）
+########################
+load_dotenv()
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+########################
+# ログレベルの設定
+########################
+DEBUG_MODE = os.getenv("DEBUG_MODE", "False").lower() in ("true", "1", "t")
+log_level = logging.DEBUG if DEBUG_MODE else logging.INFO
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
+logging.basicConfig(
+    level=log_level,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+########################
+# 環境変数・定数
+########################
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
+THREAD_ID = os.getenv("THREAD_ID")
+FORUM_CHANNEL_ID = os.getenv("FORUM_CHANNEL_ID")
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
+# 必須の環境変数が設定されているか確認
+if THREAD_ID is None or FORUM_CHANNEL_ID is None or DATABASE_URL is None:
+    logger.error("THREAD_ID、FORUM_CHANNEL_ID、またはDATABASE_URLが設定されていません。環境変数を確認してください。")
+    exit(1)
 
-# Translations
-*.mo
-*.pot
+try:
+    THREAD_ID = int(THREAD_ID)
+    FORUM_CHANNEL_ID = int(FORUM_CHANNEL_ID)
+except ValueError:
+    logger.error("THREAD_IDまたはFORUM_CHANNEL_IDが無効な値です。正しいチャンネルID(数値)を設定してください。")
+    exit(1)
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
+########################
+# リアクションIDの定義
+########################
+REACTIONS = {
+    "b431": 1289782471197458495,  # <:b431:1289782471197458495> (ランダム除外)
+    "b434": 1304690617405669376,  # <:b434:1304690617405669376> (あとで読む)
+    "b435": 1304690627723657267,  # <:b435:1304690627723657267> (お気に入り)
+}
 
-# Flask stuff:
-instance/
-.webassets-cache
+READ_LATER_REACTION_ID = REACTIONS["b434"]  # あとで読む
+FAVORITE_REACTION_ID   = REACTIONS["b435"]  # お気に入り
+RANDOM_EXCLUDE_ID      = REACTIONS["b431"]  # ランダム除外
+SPECIFIC_EXCLUDE_USER  = 695096014482440244     # 特定投稿者 (例)
 
-# Scrapy stuff:
-.scrapy
+########################
+# DB接続プール
+########################
+try:
+    db_pool = pool.SimpleConnectionPool(
+        minconn=1,
+        maxconn=10,
+        dsn=DATABASE_URL,
+        sslmode='require'  # Supabase は SSL を使用します
+    )
+    logger.info("Database connection pool initialized.")
+except Error as e:
+    logger.error(f"Database connection pool initialization error: {e}")
+    db_pool = None
 
-# Sphinx documentation
-docs/_build/
+def get_db_connection():
+    if db_pool:
+        try:
+            return db_pool.getconn()
+        except Error as e:
+            logger.error(f"Error getting database connection: {e}")
+            return None
+    else:
+        logger.error("Database connection pool is not initialized.")
+        return None
 
-# PyBuilder
-target/
+def release_db_connection(conn):
+    if db_pool and conn:
+        try:
+            db_pool.putconn(conn)
+        except Error as e:
+            logger.error(f"Error releasing database connection: {e}")
 
-# Jupyter Notebook
-.ipynb_checkpoints
+def initialize_db():
+    conn = get_db_connection()
+    if not conn:
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id SERIAL PRIMARY KEY,
+                message_id BIGINT NOT NULL UNIQUE,
+                thread_id BIGINT NOT NULL,
+                author_id BIGINT NOT NULL,
+                reactions JSONB DEFAULT '{}',
+                content TEXT
+            )
+            """)
+            conn.commit()
+        logger.info("Database initialized successfully.")
+    except Error as e:
+        logger.error(f"Error initializing tables: {e}")
+    finally:
+        release_db_connection(conn)
 
-# pyenv
-.python-version
+initialize_db()
 
-# celery beat schedule file
-celerybeat-schedule
+########################
+# Botインテンツの設定
+########################
+intents = discord.Intents.default()
+intents.message_content = True
+intents.messages = True
+intents.reactions = True
+intents.guilds = True
+intents.members = True
+intents.voice_states = True  # ボイス状態の取得
 
-# SageMath parsed files
-*.sage.py
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+########################
+# ヘルパー変数・関数
+########################
+last_chosen_authors = {}
+last_author_id = None  # おすすめ漫画の最後の投稿者ID
 
-# Spyder project settings
-.spyderproject
-.spyproject
+async def safe_fetch_message(channel, message_id):
+    try:
+        return await channel.fetch_message(message_id)
+    except (discord.NotFound, discord.HTTPException):
+        return None
 
-# Rope project settings
-.ropeproject
+async def ensure_message_in_db(message):
+    if not message:
+        return
+    try:
+        # 非同期に実行するために asyncio.to_thread を使用
+        await asyncio.to_thread(_ensure_message_in_db_sync, message)
+    except Exception as e:
+        logger.error(f"Error ensuring message in DB: {e}")
 
-# mkdocs documentation
-/site
+def _ensure_message_in_db_sync(message):
+    conn = get_db_connection()
+    if not conn:
+        return
+    try:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT id FROM messages WHERE message_id = %s", (message.id,))
+            row = cur.fetchone()
+            if row:
+                return
 
-# mypy
-.mypy_cache/
+            # メッセージを挿入
+            cur.execute("""
+                INSERT INTO messages (message_id, thread_id, author_id, content)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
+            """, (message.id, message.channel.id, message.author.id, message.content))
+            conn.commit()
+            logger.info(f"Inserted new message into DB (message_id={message.id}).")
+    except Error as e:
+        logger.error(f"Error ensuring message in DB: {e}")
+    finally:
+        release_db_connection(conn)
+
+async def update_reactions_in_db(message_id, emoji_id, user_id, add=True):
+    try:
+        await asyncio.to_thread(_update_reactions_in_db_sync, message_id, emoji_id, user_id, add)
+    except Exception as e:
+        logger.error(f"Error updating reactions in DB: {e}")
+
+def _update_reactions_in_db_sync(message_id, emoji_id, user_id, add=True):
+    conn = get_db_connection()
+    if not conn:
+        return
+    try:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT reactions FROM messages WHERE message_id = %s", (message_id,))
+            row = cur.fetchone()
+            if not row:
+                logger.info(f"No row found for message_id={message_id}, skip reaction update.")
+                return
+            reactions = row['reactions'] or {}
+            if isinstance(reactions, str):
+                try:
+                    reactions = json.loads(reactions)
+                except json.JSONDecodeError:
+                    reactions = {}
+
+            str_emoji_id = str(emoji_id)
+            user_list = reactions.get(str_emoji_id, [])
+
+            if add:
+                if user_id not in user_list:
+                    user_list.append(user_id)
+                    logger.debug(f"Added user_id={user_id} to reaction_id={emoji_id} for message_id={message_id}.")
+            else:
+                if user_id in user_list:
+                    user_list.remove(user_id)
+                    logger.debug(f"Removed user_id={user_id} from reaction_id={emoji_id} for message_id={message_id}.")
+
+            reactions[str_emoji_id] = user_list
+            new_json = json.dumps(reactions)
+            logger.debug(f"Updated reactions for message_id={message_id}: {new_json}")
+
+            cur.execute("""
+                UPDATE messages
+                SET reactions = %s
+                WHERE message_id = %s
+            """, (new_json, message_id))
+            conn.commit()
+            logger.info(f"Reactions updated for message_id={message_id}. Current reactions: {new_json}")
+    except Error as e:
+        logger.error(f"Error updating reactions in DB: {e}")
+    finally:
+        release_db_connection(conn)
+
+def user_reacted(msg, reaction_id, user_id):
+    reaction_data = msg.get('reactions', {})
+    if isinstance(reaction_data, str):
+        try:
+            reaction_data = json.loads(reaction_data)
+        except json.JSONDecodeError:
+            reaction_data = {}
+    logger.debug(f"user_reacted: reaction_id={reaction_id}, user_id={user_id}, users={reaction_data.get(str(reaction_id), [])}")
+    return (user_id in reaction_data.get(str(reaction_id), []))
+
+async def get_random_message(thread_id, filter_func=None, button_name="N/A"):
+    try:
+        # 非同期に実行するために asyncio.to_thread を使用
+        return await asyncio.to_thread(_get_random_message_sync, thread_id, filter_func, button_name)
+    except Exception as e:
+        logger.error(f"Error getting random message: {e}")
+        return None
+
+def _get_random_message_sync(thread_id, filter_func=None, button_name="N/A"):
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT * FROM messages WHERE thread_id = %s", (thread_id,))
+            rows = cur.fetchall()
+
+            for m in rows:
+                if m['reactions'] is None:
+                    m['reactions'] = {}
+                elif isinstance(m['reactions'], str):
+                    try:
+                        m['reactions'] = json.loads(m['reactions']) or {}
+                    except json.JSONDecodeError:
+                        m['reactions'] = {}
+
+            logger.info(f"[DEBUG] [{button_name}] get_random_message: total {len(rows)} messages before filter.")
+
+            if filter_func:
+                filtered = []
+                for row in rows:
+                    if filter_func(row):
+                        filtered.append(row)
+                logger.info(f"[DEBUG] [{button_name}] get_random_message: after filter -> {len(filtered)} messages remain.")
+                rows = filtered
+
+            if not rows:
+                return None
+            return random.choice(rows)
+    except Error as e:
+        logger.error(f"Error fetching random message: {e}")
+        return None
+    finally:
+        release_db_connection(conn)
+
+########################
+# Viewクラス
+########################
+class CombinedView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)  # タイムアウトなしに設定
+
+    async def get_author_name(self, author_id):
+        user = bot.get_user(author_id)
+        if user is None:
+            try:
+                user = await bot.fetch_user(author_id)
+            except discord.NotFound:
+                user = None
+        if user:
+            return user.display_name or user.name
+        else:
+            return f"UnknownUser({author_id})"
+
+    async def handle_selection(self, interaction, random_message, user_id):
+        if random_message:
+            last_chosen_authors[user_id] = random_message['author_id']
+            author_name = await self.get_author_name(random_message['author_id'])
+            # メッセージ送信
+            await interaction.channel.send(
+                f"{interaction.user.mention} さんには、{author_name} さんの投稿がおすすめだよ！\n"
+                f"https://discord.com/channels/{interaction.guild_id}/{THREAD_ID}/{random_message['message_id']}"
+            )
+        else:
+            await interaction.channel.send(
+                f"{interaction.user.mention} さん、該当する投稿がありませんでした。リアクションを見直してみてください！"
+            )
+
+        # パネルを再送信
+        await send_panel(interaction.channel)
+
+    async def get_and_handle_random_message(self, interaction, filter_func, button_name="N/A"):
+        # インタラクションへの迅速な応答
+        await interaction.response.defer()  # 応答を延期
+        random_msg = await get_random_message(THREAD_ID, filter_func=filter_func, button_name=button_name)
+        await self.handle_selection(interaction, random_msg, interaction.user.id)
+
+    # --- 青ボタン：ランダム ---
+    @discord.ui.button(label="ランダム", style=discord.ButtonStyle.primary, row=0, custom_id="blue_random_unique_id")
+    async def blue_random(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button_name = "blue_random"
+        def filter_func(msg):
+            if msg['author_id'] == interaction.user.id:
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: same user.")
+                return False
+            if last_chosen_authors.get(interaction.user.id) == msg['author_id']:
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: same author as last selection.")
+                return False
+            if msg['author_id'] == SPECIFIC_EXCLUDE_USER:
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: specific exclude author.")
+                return False
+            return True
+
+        await self.get_and_handle_random_message(interaction, filter_func, button_name=button_name)
+
+    # --- 青ボタン：あとで読む (b434) ---
+    @discord.ui.button(label="あとで読む", style=discord.ButtonStyle.primary, row=0, custom_id="read_later_unique_id")
+    async def read_later(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button_name = "blue_read_later"
+        def filter_func(msg):
+            if not user_reacted(msg, READ_LATER_REACTION_ID, interaction.user.id):
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: no b434 from user.")
+                return False
+            if msg['author_id'] == interaction.user.id:
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: same user.")
+                return False
+            if last_chosen_authors.get(interaction.user.id) == msg['author_id']:
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: same author as last selection.")
+                return False
+            if msg['author_id'] == SPECIFIC_EXCLUDE_USER:
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: specific exclude author.")
+                return False
+            return True
+
+        await self.get_and_handle_random_message(interaction, filter_func, button_name=button_name)
+
+    # --- 青ボタン：お気に入り (b435) ---
+    @discord.ui.button(label="お気に入り", style=discord.ButtonStyle.primary, row=0, custom_id="favorite_unique_id")
+    async def favorite(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button_name = "blue_favorite"
+        def filter_func(msg):
+            logger.debug(f"DB reactions for msg_id={msg['message_id']}: {msg['reactions']}")
+            if not user_reacted(msg, FAVORITE_REACTION_ID, interaction.user.id):
+                logger.debug(
+                    f"Excluding msg_id={msg['message_id']}: reaction check failed, "
+                    f"FAVORITE_REACTION_ID={FAVORITE_REACTION_ID}, user_id={interaction.user.id}, reactions={msg['reactions']}"
+                )
+                return False
+            if msg['author_id'] == interaction.user.id:
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: same user.")
+                return False
+            if last_chosen_authors.get(interaction.user.id) == msg['author_id']:
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: same author as last selection.")
+                return False
+            if msg['author_id'] == SPECIFIC_EXCLUDE_USER:
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: specific exclude author.")
+                return False
+            return True
+
+        await self.get_and_handle_random_message(interaction, filter_func, button_name=button_name)
+
+    # --- 赤ボタン：ランダム ---
+    @discord.ui.button(label="ランダム", style=discord.ButtonStyle.danger, row=1, custom_id="red_random_unique_id")
+    async def red_random(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button_name = "red_random"
+        def filter_func(msg):
+            if user_reacted(msg, RANDOM_EXCLUDE_ID, interaction.user.id):
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: user has b431.")
+                return False
+            if msg['author_id'] == interaction.user.id:
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: same user.")
+                return False
+            if msg['author_id'] == SPECIFIC_EXCLUDE_USER:
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: specific exclude author.")
+                return False
+            if last_chosen_authors.get(interaction.user.id) == msg['author_id']:
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: same author as last selection.")
+                return False
+            return True
+
+        await self.get_and_handle_random_message(interaction, filter_func, button_name=button_name)
+
+    # --- 赤ボタン：あとで読む (b434) + b431除外 ---
+    @discord.ui.button(label="あとで読む", style=discord.ButtonStyle.danger, row=1, custom_id="conditional_read_later_unique_id")
+    async def conditional_read_later(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button_name = "red_read_later"
+        def filter_func(msg):
+            if not user_reacted(msg, READ_LATER_REACTION_ID, interaction.user.id):
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: no b434 from user.")
+                return False
+            if user_reacted(msg, RANDOM_EXCLUDE_ID, interaction.user.id):
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: user has b431.")
+                return False
+            if msg['author_id'] == interaction.user.id:
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: same user.")
+                return False
+            if last_chosen_authors.get(interaction.user.id) == msg['author_id']:
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: same author as last selection.")
+                return False
+            if msg['author_id'] == SPECIFIC_EXCLUDE_USER:
+                logger.debug(f"[{button_name}] Excluding msg_id={msg['message_id']}: specific exclude author.")
+                return False
+            return True
+
+        await self.get_and_handle_random_message(interaction, filter_func, button_name=button_name)
+
+########################
+# パネルの送信
+########################
+current_panel_message_id = None
+
+async def send_panel(channel):
+    global current_panel_message_id
+    try:
+        # 既存のパネルメッセージを検索して削除
+        async for msg in channel.history(limit=100):
+            if msg.author == bot.user and msg.embeds:
+                embed = msg.embeds[0]
+                if embed.title == "🎯 エロ漫画ルーレット":
+                    await msg.delete()
+                    logger.info(f"Deleted old panel message with ID {msg.id}.")
+    except Exception as e:
+        logger.error(f"Error deleting old panel messages: {e}")
+
+    # 新しいパネルを送信
+    embed = create_panel_embed()
+    view = CombinedView()
+    try:
+        sent_msg = await channel.send(embed=embed, view=view)
+        current_panel_message_id = sent_msg.id
+        logger.info(f"Sent new panel message with ID {current_panel_message_id}.")
+    except discord.HTTPException as e:
+        logger.error(f"Error sending panel message: {e}")
+
+def create_panel_embed():
+    embed = discord.Embed(
+        title="🎯 エロ漫画ルーレット",
+        description=(
+            "ボタンを押してエロ漫画を選んでください！<a:c296:1288305823323263029>\n\n"
+            "🔵：自分の <:b431:1289782471197458495> を除外しない\n"
+            "🔴：自分の <:b431:1289782471197458495> を除外する\n\n"
+            "**ランダム**：全体から選ぶ\n"
+            "**あとで読む**：<:b434:1304690617405669376> を付けた投稿\n"
+            "**お気に入り**：<:b435:1304690627723657267> を付けた投稿"
+        ),
+        color=0xFF69B4
+    )
+    return embed
+
+########################
+# スラッシュコマンド
+########################
+
+# 使用を許可するユーザーIDのセット
+ALLOWED_USERS = {302778094320615425, 822460191118721034}
+
+# カスタムチェックの定義
+def is_allowed_user():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        return interaction.user.id in ALLOWED_USERS
+    return app_commands.check(predicate)
+
+@bot.tree.command(name="panel", description="ルーレット用パネルを表示します。")
+@is_allowed_user()  # 使用を許可されたユーザーのみに制限
+async def panel_command(interaction: discord.Interaction):
+    channel = interaction.channel
+    if channel:
+        await interaction.response.send_message("パネルを表示します！", ephemeral=True)
+        await send_panel(channel)
+    else:
+        await interaction.response.send_message("エラー: チャンネルが取得できませんでした。", ephemeral=True)
+
+@bot.tree.command(name="check_reactions", description="特定のメッセージのリアクションを表示します。")
+@is_allowed_user()  # 使用を許可されたユーザーのみに制限
+async def check_reactions_command(interaction: discord.Interaction, message_id: str):
+    try:
+        msg_id = int(message_id)
+    except ValueError:
+        await interaction.response.send_message("無効なメッセージIDです。", ephemeral=True)
+        return
+
+    try:
+        # 非同期に実行するために asyncio.to_thread を使用
+        reactions = await asyncio.to_thread(_fetch_reactions_sync, msg_id)
+    except Exception as e:
+        logger.error(f"Error fetching reactions for message_id={msg_id}: {e}")
+        await interaction.response.send_message("リアクション取得中にエラーが発生しました。", ephemeral=True)
+        return
+
+    if reactions is None:
+        await interaction.response.send_message("DBにそのメッセージが存在しません。", ephemeral=True)
+        return
+
+    if not reactions:
+        await interaction.response.send_message("リアクションはありません。", ephemeral=True)
+    else:
+        embed = discord.Embed(
+            title=f"Message ID: {msg_id} のリアクション情報",
+            color=0x00FF00
+        )
+        for emoji_id, user_ids in reactions.items():
+            try:
+                emoji_obj = bot.get_emoji(int(emoji_id))
+                if emoji_obj:
+                    emoji_str = str(emoji_obj)
+                else:
+                    emoji_str = f"UnknownEmoji({emoji_id})"
+            except ValueError:
+                emoji_str = f"InvalidEmojiID({emoji_id})"
+
+            embed.add_field(
+                name=emoji_str,
+                value=f"{len(user_ids)} 人: {user_ids}",
+                inline=False
+            )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+def _fetch_reactions_sync(msg_id):
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT reactions FROM messages WHERE message_id = %s", (msg_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+
+            r = row['reactions'] or {}
+            if isinstance(r, str):
+                try:
+                    r = json.loads(r)
+                except json.JSONDecodeError:
+                    r = {}
+
+            return r
+    except Error as e:
+        logger.error(f"Error fetching reactions for message_id={msg_id}: {e}")
+        return None
+    finally:
+        release_db_connection(conn)
+
+@bot.tree.command(name="db_save", description="既存のメッセージのリアクションをデータベースに保存します。")
+@is_allowed_user()  # 使用を許可されたユーザーのみに制限
+async def db_save_command(interaction: discord.Interaction):
+    try:
+        logger.info(f"db_save command invoked by user_id={interaction.user.id}")
+
+        # インタラクションへの迅速な応答
+        await interaction.response.send_message("リアクションの移行を開始します。しばらくお待ちください...", ephemeral=True)
+        logger.debug("Sent initial response to user.")
+
+        # バックグラウンドタスクとして処理を実行
+        asyncio.create_task(run_db_save(interaction))
+        logger.debug("Started run_db_save task.")
+
+    except Exception as e:
+        logger.error(f"Unexpected error in db_save command: {e}", exc_info=True)
+        # インタラクションにまだ応答していない場合
+        if not interaction.response.is_done():
+            await interaction.response.send_message("リアクションの移行中に予期しないエラーが発生しました。", ephemeral=True)
+        else:
+            await interaction.followup.send("リアクションの移行中に予期しないエラーが発生しました。", ephemeral=True)
+
+async def run_db_save(interaction: discord.Interaction):
+    try:
+        logger.info("run_db_save task started.")
+        channel = bot.get_channel(THREAD_ID)
+        if channel is None:
+            await interaction.followup.send("指定したTHREAD_IDのチャンネルが見つかりませんでした。", ephemeral=True)
+            logger.error("Specified THREAD_ID channel not found.")
+            return
+
+        all_messages = []
+        try:
+            async for message in channel.history(limit=None):
+                all_messages.append(message)
+            logger.debug(f"Fetched {len(all_messages)} messages.")
+        except discord.HTTPException as e:
+            logger.error(f"Error fetching message history for migration: {e}")
+            await interaction.followup.send("メッセージ履歴の取得中にエラーが発生しました。", ephemeral=True)
+            return
+
+        success_count = 0
+        for message in all_messages:
+            await ensure_message_in_db(message)
+            # Fetch reactions
+            try:
+                message = await channel.fetch_message(message.id)
+                reactions = message.reactions
+                for reaction in reactions:
+                    # カスタム絵文字のみを処理
+                    if isinstance(reaction.emoji, discord.Emoji):
+                        emoji_id = reaction.emoji.id
+                        if emoji_id not in REACTIONS.values():
+                            continue
+                    else:
+                        # Unicode emojiの場合はスキップする
+                        continue
+
+                    async for user in reaction.users():
+                        if user.id == bot.user.id:
+                            continue
+                        await update_reactions_in_db(message.id, reaction.emoji.id, user.id, add=True)
+                success_count += 1
+                # Optional: Add a short delay to prevent rate limiting
+                await asyncio.sleep(0.1)
+            except discord.HTTPException as e:
+                logger.error(f"Error fetching reactions for message_id={message.id}: {e}")
+
+        await interaction.followup.send(f"リアクションの移行が完了しました。{success_count} 件のメッセージを処理しました。", ephemeral=True)
+        logger.info(f"db_save command completed successfully. Processed {success_count} messages.")
+
+    except Exception as e:
+        logger.error(f"Unexpected error in run_db_save task: {e}", exc_info=True)
+        await interaction.followup.send("リアクションの移行中に予期しないエラーが発生しました。", ephemeral=True)
+
+########################
+# おすすめ漫画のスラッシュコマンド
+########################
+
+@bot.tree.command(name="おすすめ漫画", description="おすすめの漫画をランダムで表示します")
+async def recommend_manga(interaction: discord.Interaction):
+    global last_author_id
+    try:
+        # ターゲットのフォーラムチャンネルとスレッドの取得
+        forum_channel = bot.get_channel(FORUM_CHANNEL_ID)
+        if forum_channel is None:
+            await interaction.response.send_message(f"フォーラムチャンネルが見つかりませんでした（ID: {FORUM_CHANNEL_ID}）", ephemeral=True)
+            return
+
+        # スレッド取得
+        thread = bot.get_channel(THREAD_ID)
+        if thread is None or not isinstance(thread, discord.Thread):
+            await interaction.response.send_message(f"スレッドが見つかりませんでした（ID: {THREAD_ID}）", ephemeral=True)
+            return
+
+        # インタラクションの反応をおくらせる
+        await interaction.response.defer()
+
+        # スレッドからメッセージを取得
+        messages = [message async for message in thread.history(limit=100)]
+        if not messages:
+            await interaction.followup.send("スレッド内にメッセージがありませんでした。", ephemeral=True)
+            return
+
+        # コマンド実行者および直前に選ばれた投稿者以外のメッセージをフィルタリング
+        filtered_messages = [
+            msg for msg in messages
+            if msg.author.id != interaction.user.id and msg.author.id != last_author_id
+        ]
+
+        # フィルタされたメッセージがない場合は全メッセージから選ぶ
+        if not filtered_messages:
+            random_message = random.choice(messages)
+        else:
+            random_message = random.choice(filtered_messages)
+
+        # 新しい投稿者IDを記録
+        last_author_id = random_message.author.id
+
+        # メッセージリンクを作成
+        message_link = f"https://discord.com/channels/{random_message.guild.id}/{random_message.channel.id}/{random_message.id}"
+
+        # ランダムメッセージを送信
+        if random_message.content:
+            await interaction.followup.send(
+                f"{interaction.user.mention} さんには、{random_message.author.display_name} さんが投稿したこの本がおすすめだよ！\n{message_link}"
+            )
+        else:
+            await interaction.followup.send("おすすめの漫画が見つかりませんでした。", ephemeral=True)
+
+    except Exception as e:
+        await interaction.followup.send(f"エラーが発生しました: {e}", ephemeral=True)
+        logger.error(f"Error occurred in recommend_manga command: {e}")
+
+########################
+# メッセージ履歴同期タスク
+########################
+@tasks.loop(minutes=5)
+async def save_all_messages_to_db_task():
+    await save_all_messages_to_db()
+
+async def save_all_messages_to_db():
+    """
+    メッセージをページングで取得し、DBに保存する。
+    リアクション情報の保存を除外。
+    """
+    channel = bot.get_channel(THREAD_ID)
+    if channel is None:
+        logger.error("指定したTHREAD_IDのチャンネルが見つかりませんでした。")
+        return
+
+    all_messages = []
+    last_msg = None
+    batch_size = 50  # バッチサイズを小さめに
+    try:
+        while True:
+            batch = []
+            # 'before' にはメッセージオブジェクトを渡す
+            async for msg in channel.history(limit=batch_size, before=last_msg):
+                batch.append(msg)
+
+            if not batch:
+                break
+
+            all_messages.extend(batch)
+
+            # ページングするために、"last_msg" はメッセージオブジェクト
+            last_msg = batch[-1]
+
+            # API制限を回避するためのスリープ
+            await asyncio.sleep(1.0)
+
+        if all_messages:
+            await bulk_save_messages_to_db(all_messages)
+        logger.info(f"Saved total {len(all_messages)} messages to the database (paging).")
+
+    except discord.HTTPException as e:
+        logger.error(f"Error fetching message history in paging: {e}")
+
+async def bulk_save_messages_to_db(messages):
+    """
+    メッセージの基本情報のみをデータベースに保存。
+    リアクション情報の保存は行わない。
+    """
+    if not messages:
+        return
+    try:
+        # 非同期に実行するために asyncio.to_thread を使用
+        await asyncio.to_thread(_bulk_save_messages_to_db_sync, messages)
+    except Exception as e:
+        logger.error(f"Error during bulk save of messages: {e}")
+
+def _bulk_save_messages_to_db_sync(messages):
+    conn = get_db_connection()
+    if not conn:
+        return
+    try:
+        data = []
+        for message in messages:
+            data.append((message.id, message.channel.id, message.author.id, message.content))
+            logger.debug(f"Bulk saving message_id={message.id} to DB without reactions.")
+
+        with conn.cursor() as cur:
+            cur.executemany("""
+                INSERT INTO messages (message_id, thread_id, author_id, content)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (message_id) DO NOTHING
+            """, data)
+            conn.commit()
+
+        logger.info(f"Bulk inserted {len(messages)} messages without reactions.")
+    except Error as e:
+        logger.error(f"Error during bulk insert: {e}")
+    finally:
+        release_db_connection(conn)
+
+########################
+# リアクションイベント
+########################
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    logger.info(f"on_raw_reaction_add fired: emoji={payload.emoji}, user_id={payload.user_id}, message_id={payload.message_id}")
+
+    if payload.user_id == bot.user.id:
+        logger.debug("Reaction added by the bot itself; ignoring.")
+        return
+
+    # カスタム絵文字のみを処理
+    if isinstance(payload.emoji, discord.Emoji):
+        emoji_id = payload.emoji.id
+        if emoji_id not in REACTIONS.values():
+            logger.debug(f"Ignoring reaction with emoji_id={emoji_id} (not in target reactions).")
+            return
+    else:
+        # Unicode emojiの場合はスキップ
+        logger.debug(f"Ignoring unicode reaction: {payload.emoji}")
+        return
+
+    channel = bot.get_channel(payload.channel_id)
+    if not channel:
+        logger.info("channel is None, cannot process reaction.")
+        return
+
+    message = await safe_fetch_message(channel, payload.message_id)
+    if not message:
+        logger.info(f"message_id={payload.message_id} not found in channel.")
+        return
+
+    await ensure_message_in_db(message)
+    await update_reactions_in_db(payload.message_id, payload.emoji.id, payload.user_id, add=True)
+
+@bot.event
+async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
+    logger.info(f"on_raw_reaction_remove fired: emoji={payload.emoji}, user_id={payload.user_id}, message_id={payload.message_id}")
+
+    if payload.user_id == bot.user.id:
+        logger.debug("Reaction removed by the bot itself; ignoring.")
+        return
+
+    # カスタム絵文字のみを処理
+    if isinstance(payload.emoji, discord.Emoji):
+        emoji_id = payload.emoji.id
+        if emoji_id not in REACTIONS.values():
+            logger.debug(f"Ignoring reaction removal with emoji_id={emoji_id} (not in target reactions).")
+            return
+    else:
+        # Unicode emojiの場合はスキップ
+        logger.debug(f"Ignoring unicode reaction removal: {payload.emoji}")
+        return
+
+    channel = bot.get_channel(payload.channel_id)
+    if not channel:
+        logger.info("channel is None, cannot process reaction removal.")
+        return
+
+    message = await safe_fetch_message(channel, payload.message_id)
+    if not message:
+        logger.info(f"message_id={payload.message_id} not found in channel.")
+        return
+
+    await ensure_message_in_db(message)
+    await update_reactions_in_db(payload.message_id, payload.emoji.id, payload.user_id, add=False)
+
+########################
+# メッセージイベント
+########################
+
+# ランダムメッセージのリスト
+farewell_messages = [
+    "{mention} いい夢見なっつ！",
+    "{mention} 夢で会おうなっつ！",
+    "{mention} ちゃんと布団で寝なっつ！",
+    "{mention} また起きたら来てくれよなっつ！"
+]
+
+# ログ削除の対象チャンネルID
+target_channel_ids = [1282323693502070826, 1300417181690892288]
+
+@bot.event
+async def on_message(message):
+    # Bot自身のメッセージには反応しない
+    if message.author == bot.user:
+        return
+
+    # 1. メンションが飛ばされた際にボイスチャンネルから切断
+    if message.channel.id in target_channel_ids and message.mentions:
+        for user in message.mentions:
+            if user.voice and user.voice.channel:
+                try:
+                    # ユーザーをボイスチャンネルから切断
+                    await user.move_to(None)
+                    
+                    # ランダムでメッセージを送信
+                    farewell_message = random.choice(farewell_messages).format(mention=user.mention)
+                    await message.channel.send(farewell_message)
+                except discord.Forbidden:
+                    await message.channel.send(f"{user.mention}を切断する権限がありません。")
+                except discord.HTTPException as e:
+                    await message.channel.send(f"エラーが発生しました: {e}")
+
+    # 2. 「バルス」と入力した人の過去1時間のメッセージを削除
+    if message.content == "バルス":
+        now = datetime.utcnow()
+        deleted_count = 0
+        async for msg in message.channel.history(limit=None, after=now - timedelta(hours=1)):
+            # 「バルス」と入力した人のメッセージだけ削除
+            if msg.author.id == message.author.id:
+                try:
+                    await msg.delete()
+                    deleted_count += 1
+
+                    # 一定量の削除後に遅延を挟む
+                    if deleted_count % 10 == 0:
+                        await asyncio.sleep(0.5)  # 0.5秒の遅延を挟む
+
+                except (discord.Forbidden, discord.HTTPException) as e:
+                    await message.channel.send(f"メッセージ削除中にエラーが発生しました: {e}")
+                    logger.error(f"エラー発生: {e}")
+                    return
+
+        # 削除完了メッセージを送信し、2秒後に自動削除
+        confirmation_message = await message.channel.send(f"過去1時間以内にあなたが送信したメッセージを{deleted_count}件削除しました。", delete_after=2)
+        logger.info(f"{deleted_count}件のメッセージを削除しました。")
+
+    # 他のon_messageイベントハンドラがある場合はそれを呼び出す
+    await bot.process_commands(message)
+
+########################
+# 永続的なビューの登録と on_ready イベント
+########################
+@bot.event
+async def on_ready():
+    logger.info(f"Bot is online! {bot.user}")
+    save_all_messages_to_db_task.start()
+    try:
+        synced = await bot.tree.sync()
+        logger.info(f"Synced {len(synced)} slash commands.")
+    except Exception as e:
+        logger.error(f"Error syncing slash commands: {e}")
+
+    # 永続的なビューを登録
+    bot.add_view(CombinedView())
+    logger.info("Registered CombinedView as a persistent view.")
+
+########################
+# Bot起動
+########################
+if __name__ == "__main__":
+    if DISCORD_TOKEN:
+        try:
+            bot.run(DISCORD_TOKEN)
+        except Exception as e:
+            logger.error(f"Error starting the bot: {e}")
+            if db_pool:
+                db_pool.closeall()
+                logger.info("Closed all database connections.")
+    else:
+        logger.error("DISCORD_TOKEN が設定されていません。")
