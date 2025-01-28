@@ -6,7 +6,6 @@ import os
 import random
 import logging
 import asyncio
-import psycopg2
 from psycopg2 import pool, Error
 from psycopg2.extras import DictCursor
 from dotenv import load_dotenv
