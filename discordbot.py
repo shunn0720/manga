@@ -1,6 +1,5 @@
 import discord
 from discord.ext import commands, tasks
-from discord import app_commands
 from datetime import datetime, timedelta
 import os
 import random
@@ -55,13 +54,13 @@ except ValueError:
 REACTIONS = {
     "b431": 1289782471197458495,  # <:b431:1289782471197458495> (ランダム除外)
     "b434": 1304690617405669376,  # <:b434:1304690617405669376> (あとで読む)
-    "b435": 1304690627723657267,  # <:b435:1304690627723657267> (お気に入り)
+    "b435": 1304690627723657267   # <:b435:1304690627723657267> (お気に入り)
 }
 
-READ_LATER_REACTION_ID = REACTIONS["b434"]  
-FAVORITE_REACTION_ID   = REACTIONS["b435"]  
-RANDOM_EXCLUDE_ID      = REACTIONS["b431"]  
-SPECIFIC_EXCLUDE_USER  = 695096014482440244  
+READ_LATER_REACTION_ID = REACTIONS["b434"]  # あとで読む
+FAVORITE_REACTION_ID = REACTIONS["b435"]    # お気に入り
+RANDOM_EXCLUDE_ID = REACTIONS["b431"]       # ランダム除外
+SPECIFIC_EXCLUDE_USER = 695096014482440244  # 特定投稿者 (例)
 
 ########################
 # DB接続プール
@@ -78,6 +77,7 @@ except Error as e:
     logger.error(f"Database connection pool initialization error: {e}")
     db_pool = None
 
+
 def get_db_connection():
     if db_pool:
         try:
@@ -89,12 +89,14 @@ def get_db_connection():
         logger.error("Database connection pool is not initialized.")
         return None
 
+
 def release_db_connection(conn):
     if db_pool and conn:
         try:
             db_pool.putconn(conn)
         except Error as e:
             logger.error(f"Error releasing database connection: {e}")
+
 
 def initialize_db():
     conn = get_db_connection()
@@ -119,7 +121,9 @@ def initialize_db():
     finally:
         release_db_connection(conn)
 
+
 initialize_db()
+
 
 ########################
 # Botインテンツの設定
@@ -134,16 +138,19 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+
 ########################
 # ヘルパー変数・関数
 ########################
 last_chosen_authors = {}
+
 
 async def safe_fetch_message(channel, message_id):
     try:
         return await channel.fetch_message(message_id)
     except (discord.NotFound, discord.HTTPException):
         return None
+
 
 async def ensure_message_in_db(message):
     if not message:
@@ -152,6 +159,7 @@ async def ensure_message_in_db(message):
         await asyncio.to_thread(_ensure_message_in_db_sync, message)
     except Exception as e:
         logger.error(f"Error ensuring message in DB: {e}")
+
 
 def _ensure_message_in_db_sync(message):
     conn = get_db_connection()
@@ -175,11 +183,13 @@ def _ensure_message_in_db_sync(message):
     finally:
         release_db_connection(conn)
 
+
 async def update_reactions_in_db(message_id, emoji_id, user_id, add=True):
     try:
         await asyncio.to_thread(_update_reactions_in_db_sync, message_id, emoji_id, user_id, add)
     except Exception as e:
         logger.error(f"Error updating reactions in DB: {e}")
+
 
 def _update_reactions_in_db_sync(message_id, emoji_id, user_id, add=True):
     conn = get_db_connection()
@@ -224,6 +234,7 @@ def _update_reactions_in_db_sync(message_id, emoji_id, user_id, add=True):
     finally:
         release_db_connection(conn)
 
+
 def user_reacted(msg, reaction_id, user_id):
     reaction_data = msg.get('reactions', {})
     if isinstance(reaction_data, str):
@@ -233,12 +244,44 @@ def user_reacted(msg, reaction_id, user_id):
             reaction_data = {}
     return (user_id in reaction_data.get(str(reaction_id), []))
 
+
+def _fetch_reactions_sync(msg_id):
+    """
+    F821 undefined name '_fetch_reactions_sync' を解消するための関数の仮定実装。
+    check_command (旧:check_reactions_command) 内で呼び出されている。
+    """
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT reactions FROM messages WHERE message_id = %s", (msg_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+
+            r = row['reactions'] or {}
+            if isinstance(r, str):
+                try:
+                    r = json.loads(r)
+                except json.JSONDecodeError:
+                    r = {}
+
+            return r
+    except Error as e:
+        logger.error(f"Error fetching reactions for message_id={msg_id}: {e}")
+        return None
+    finally:
+        release_db_connection(conn)
+
+
 async def get_random_message(thread_id, filter_func=None, button_name="N/A"):
     try:
         return await asyncio.to_thread(_get_random_message_sync, thread_id, filter_func, button_name)
     except Exception as e:
         logger.error(f"Error getting random message: {e}")
         return None
+
 
 def _get_random_message_sync(thread_id, filter_func=None, button_name="N/A"):
     conn = get_db_connection()
@@ -271,6 +314,7 @@ def _get_random_message_sync(thread_id, filter_func=None, button_name="N/A"):
     finally:
         release_db_connection(conn)
 
+
 ########################
 # Viewクラス
 ########################
@@ -302,7 +346,9 @@ class CombinedView(discord.ui.View):
             await interaction.channel.send(
                 f"{interaction.user.mention} さん、該当する投稿がありませんでした。"
             )
+
         await send_panel(interaction.channel)
+
 
     async def get_and_handle_random_message(self, interaction, filter_func, button_name="N/A"):
         await interaction.response.defer()
@@ -398,6 +444,8 @@ class CombinedView(discord.ui.View):
 ########################
 # 永続的なビューの登録
 ########################
+
+
 @bot.event
 async def on_ready():
     logger.info(f"Bot is online! {bot.user}")
@@ -415,6 +463,7 @@ async def on_ready():
 # パネルの送信
 ########################
 current_panel_message_id = None
+
 
 async def send_panel(channel):
     global current_panel_message_id
@@ -437,6 +486,7 @@ async def send_panel(channel):
     except discord.HTTPException as e:
         logger.error(f"Error sending panel message: {e}")
 
+
 def create_panel_embed():
     embed = discord.Embed(
         title="🎯 エロ漫画ルーレット",
@@ -454,13 +504,10 @@ def create_panel_embed():
 
 
 ########################
-# スラッシュコマンド (リネーム済み)
+# スラッシュコマンド
 ########################
 @bot.tree.command(name="embed", description="ルーレット用パネルを表示します。")
 async def embed_command(interaction: discord.Interaction):
-    """
-    /embed
-    """
     channel = interaction.channel
     if channel:
         await interaction.response.send_message("パネルを表示します！", ephemeral=True)
@@ -468,11 +515,9 @@ async def embed_command(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("エラー: チャンネルが取得できませんでした。", ephemeral=True)
 
+
 @bot.tree.command(name="check", description="特定のメッセージのリアクションを表示します。")
 async def check_command(interaction: discord.Interaction, message_id: str):
-    """
-    /check <message_id>
-    """
     try:
         msg_id = int(message_id)
     except ValueError:
@@ -480,6 +525,7 @@ async def check_command(interaction: discord.Interaction, message_id: str):
         return
 
     try:
+        # F821 -> _fetch_reactions_sync を追加定義したのでOK
         reactions = await asyncio.to_thread(_fetch_reactions_sync, msg_id)
     except Exception as e:
         logger.error(f"Error fetching reactions for message_id={msg_id}: {e}")
@@ -514,21 +560,20 @@ async def check_command(interaction: discord.Interaction, message_id: str):
             )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+
 @bot.tree.command(name="save", description="既存のメッセージのリアクションをデータベースに保存します。")
 async def save_command(interaction: discord.Interaction):
-    """
-    /save
-    """
     try:
         logger.info(f"/save command invoked by user_id={interaction.user.id}")
         await interaction.response.send_message("リアクションの移行を開始します。しばらくお待ちください...", ephemeral=True)
         asyncio.create_task(run_db_save(interaction))
     except Exception as e:
-        logger.error(f"Unexpected error in save command: {e}", exc_info=True)
+        logger.error(f"Unexpected error in save_command: {e}", exc_info=True)
         if not interaction.response.is_done():
             await interaction.response.send_message("リアクションの移行中に予期しないエラーが発生しました。", ephemeral=True)
         else:
             await interaction.followup.send("リアクションの移行中に予期しないエラーが発生しました。", ephemeral=True)
+
 
 async def run_db_save(interaction: discord.Interaction):
     try:
@@ -545,7 +590,7 @@ async def run_db_save(interaction: discord.Interaction):
                 all_messages.append(msg)
             logger.debug(f"Fetched {len(all_messages)} messages.")
         except discord.HTTPException as e:
-            logger.error(f"Error fetching message history: {e}")
+            logger.error(f"Error fetching message history for migration: {e}")
             await interaction.followup.send("メッセージ履歴の取得中にエラーが発生しました。", ephemeral=True)
             return
 
@@ -571,18 +616,22 @@ async def run_db_save(interaction: discord.Interaction):
             except discord.HTTPException as e:
                 logger.error(f"Error fetching reactions for message_id={message.id}: {e}")
 
-        await interaction.followup.send(f"リアクションの移行が完了しました。{success_count} 件のメッセージを処理しました。", ephemeral=True)
+        await interaction.followup.send(
+            f"リアクションの移行が完了しました。{success_count} 件のメッセージを処理しました。",
+            ephemeral=True
+        )
         logger.info(f"/save command completed successfully. Processed {success_count} messages.")
     except Exception as e:
         logger.error(f"Unexpected error in run_db_save task: {e}", exc_info=True)
         await interaction.followup.send("リアクションの移行中に予期しないエラーが発生しました。", ephemeral=True)
+
 
 ########################
 # リアクションイベント
 ########################
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    logger.info(f"on_raw_reaction_add: emoji={payload.emoji}, user_id={payload.user_id}, message_id={payload.message_id}")
+    logger.info(f"on_raw_reaction_add fired: emoji={payload.emoji}, user_id={payload.user_id}, message_id={payload.message_id}")
 
     if payload.user_id == bot.user.id:
         return
@@ -595,18 +644,21 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
     channel = bot.get_channel(payload.channel_id)
     if not channel:
+        logger.info("channel is None, cannot process reaction.")
         return
 
     message = await safe_fetch_message(channel, payload.message_id)
     if not message:
+        logger.info(f"message_id={payload.message_id} not found in channel.")
         return
 
     await ensure_message_in_db(message)
     await update_reactions_in_db(payload.message_id, payload.emoji.id, payload.user_id, add=True)
 
+
 @bot.event
 async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
-    logger.info(f"on_raw_reaction_remove: emoji={payload.emoji}, user_id={payload.user_id}, message_id={payload.message_id}")
+    logger.info(f"on_raw_reaction_remove fired: emoji={payload.emoji}, user_id={payload.user_id}, message_id={payload.message_id}")
 
     if payload.user_id == bot.user.id:
         return
@@ -619,14 +671,17 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 
     channel = bot.get_channel(payload.channel_id)
     if not channel:
+        logger.info("channel is None, cannot process reaction removal.")
         return
 
     message = await safe_fetch_message(channel, payload.message_id)
     if not message:
+        logger.info(f"message_id={payload.message_id} not found in channel.")
         return
 
     await ensure_message_in_db(message)
     await update_reactions_in_db(payload.message_id, payload.emoji.id, payload.user_id, add=False)
+
 
 ########################
 # メッセージイベント
@@ -637,15 +692,14 @@ farewell_messages = [
     "{mention} ちゃんと布団で寝なっつ！",
     "{mention} また起きたら来てくれよなっつ！"
 ]
-
 target_channel_ids = [1282323693502070826, 1300417181690892288]
+
 
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
         return
 
-    # 1. メンションが飛ばされた際にボイスチャンネルから切断
     if message.channel.id in target_channel_ids and message.mentions:
         for user in message.mentions:
             if user.voice and user.voice.channel:
@@ -658,7 +712,7 @@ async def on_message(message):
                 except discord.HTTPException as e:
                     await message.channel.send(f"エラーが発生しました: {e}")
 
-    # 2. 「バルス」と入力した人の過去1時間のメッセージを削除
+    # 行677: local variable 'confirmation_message' は使わずに削除
     if message.content == "バルス":
         now = datetime.utcnow()
         deleted_count = 0
@@ -674,7 +728,8 @@ async def on_message(message):
                     logger.error(f"エラー発生: {e}")
                     return
 
-        confirmation_message = await message.channel.send(
+        # confirmation_message が不要なら変数に代入せず直接送信
+        await message.channel.send(
             f"過去1時間以内にあなたが送信したメッセージを{deleted_count}件削除しました。",
             delete_after=2
         )
@@ -682,12 +737,14 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
+
 ########################
 # メッセージ履歴同期タスク
 ########################
 @tasks.loop(minutes=5)
 async def save_all_messages_to_db_task():
     await save_all_messages_to_db()
+
 
 async def save_all_messages_to_db():
     channel = bot.get_channel(THREAD_ID)
@@ -717,6 +774,7 @@ async def save_all_messages_to_db():
     except discord.HTTPException as e:
         logger.error(f"Error fetching message history in paging: {e}")
 
+
 async def bulk_save_messages_to_db(messages):
     if not messages:
         return
@@ -724,6 +782,7 @@ async def bulk_save_messages_to_db(messages):
         await asyncio.to_thread(_bulk_save_messages_to_db_sync, messages)
     except Exception as e:
         logger.error(f"Error during bulk save of messages: {e}")
+
 
 def _bulk_save_messages_to_db_sync(messages):
     conn = get_db_connection()
@@ -733,7 +792,7 @@ def _bulk_save_messages_to_db_sync(messages):
         data = []
         for message in messages:
             data.append((message.id, message.channel.id, message.author.id, message.content))
-            logger.debug(f"Bulk saving message_id={message.id} to DB.")
+            logger.debug(f"Bulk saving message_id={message.id} to DB without reactions.")
 
         with conn.cursor() as cur:
             cur.executemany("""
