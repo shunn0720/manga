@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 import json
 
 ########################
-# .env 環境変数読み込み
+# .env 環境変数読みこみ
 ########################
 load_dotenv()
 
